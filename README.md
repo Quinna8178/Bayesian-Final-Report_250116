@@ -1,1 +1,1 @@
-The file is the crawler of this website: https://www.lib.nccu.edu.tw
+The whole project is a bayesian analysis of NCCU visitors on this website (https://www.lib.nccu.edu.tw).
