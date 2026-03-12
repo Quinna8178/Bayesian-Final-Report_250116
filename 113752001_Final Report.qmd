@@ -1,0 +1,569 @@
+---
+title: "The usage trends of NCCU main libraries"
+subtitle: "Bayesian Final Report"
+author: "113752001 Wan-Chen,Chan"
+format:
+  html:
+    theme: cosmo
+fig-align: center
+fig-cap-location: top
+mainfont: "Times New Roman"
+sansfont: "Arial"
+monofont: "Courier New"
+mathfont: "TeX Gyre Termes Math"
+linestretch: 1.5
+editor: visual
+---
+
+## Research Purposes
+
+For every university, the library is a place possessing various functions, allowing students to learn, to study, and sometimes to take a nap. At NCCU, there are two main libraries: Chung-Cheng (中正) Library and Dah-Hsian (達賢) Library. The former is located in the main campus, while the latter is approximately a 5 to 10 minutes walk away. These libraries differ not only in location, but also in design, fulfilling users for multiple purposes.
+
+For example, if students have to prepare for a group project, they are more likely to visit Dah-Hsian library to book a discussion room. In contrast, those seeking a quiet place to study might prefer Chung-Cheng Library. Additionally, the ground floor of Chung-Cheng library is available for students to study overnight. This area is divided in to three sections: A, B and C. Section A and B provide access to computers and other electronic devices, which the other prohibits the use of any electronic devices for silent.
+
+Out of curiosity, the research aims to explore the usage trends between these libraries and investigate how Bayesian statistics can be applied to model the orientation and utilization of each area.
+
+## Method
+
+### Data Collection and Pre-Processing
+
+```{r library,include=FALSE,echo=FALSE}
+#loading packages 
+library(dplyr) 
+library(rjags)
+library(ggmcmc)
+library(skimr)
+library(dygraphs)
+library(xts)
+library(gridExtra)
+library(reshape2)
+library(lubridate)
+library(pbapply) 
+```
+
+The final data is crawled from the website of [the NCCU library](https://www.lib.nccu.edu.tw/?Lang=zh-tw) via Python, where the code can be found in this [page](https://github.com/Quinna8178/Bayesian-Final-Report_250116).
+
+We set the program to run every hour since 16th October 16,2024 till January 15, 2025, and the total sample size is 2126. Also, the original column of time is the combination of date and time (2024/10/16 09:00, for instance), we use excel to sepearate this column into three. See below the table.
+
+```{r data loading,echo=FALSE}
+dta <- read.table("library_visitors.csv",header=T, sep=",")
+head(dta)
+dim(dta)
+```
+
+Before conducting the analysis, there are several things we need to deal with:
+
+1.  Change columns into English for processing easier.
+
+2.  Convert the date of each record into weekdays.
+
+3.  Filter the date that all the libraries were shut down due to cleaning. (October 19, 2024 and October 20, 2024)
+
+4.  For the CC_A, CC_B, and CC_C shown on the NCCU library were the number of available seats, we need to transform them into occupied seats.
+
+5.  Convert the 12 time systems into 24 time systems.
+
+6.  Add columns: the days how long it had been recorded, the hour of recorded time (for example, 2:59:06 represents 2).
+
+```{r pre-processing-1,include=TRUE,echo=TRUE}
+#1 change column names 
+colnames(dta) <- c("record_day","record_time","TS","CC_L","DH_L","CC_A","CC_B","CC_C") 
+#2 weekdays
+dta$weekdays <- strftime(dta$record_day,"%A") # change weekdays 
+#3 days that all library shut down 
+dta <- filter(dta,record_day != "2024/10/19" & record_day != "2024/10/20")
+#4 transform occupied seat
+dta$CC_A <- max(dta$CC_A) - dta$CC_A
+dta$CC_B <- max(dta$CC_B) - dta$CC_B
+dta$CC_C <- max(dta$CC_C) - dta$CC_C
+#5 transform 12 time systems into 24 time systems 
+dta$record_time <- paste0(dta$record_time," ",dta$TS) 
+temp_time <- strftime(strptime(dta$record_time, format = "%I:%M:%S %p"), 
+                      format = "%H:%M:%S")
+dta$record_time <- temp_time
+#6 calculate days
+dta <- dta %>%
+  mutate(record_day = as.Date(record_day,format="%Y/%m/%d"),
+         days = as.numeric(record_day-min(record_day)),
+         hours = as.factor(hour(hms(record_time))),
+         weekdays = as.factor(weekdays))
+head(dta)
+```
+
+Last but not the least, the opening of each area is different and it would vary within the exam periods, so we need to filter the data individually, and exam each data format is what we desired for later analysis.
+
+```{r filter opening time,include=TRUE,echo=FALSE}
+# Days open for 8-24 in exam weeks in CC_L
+midterm <- seq.Date(from = as.Date("2024-10-28"),to = as.Date("2024-11-7"),
+                    by = "day")
+finalterm <- seq.Date(from = as.Date("2024-12-16"), to = as.Date("2025-1-9"), 
+                        by = "day")
+examdays <- c(finalterm,midterm) %>% gsub("-","/",.)
+# Filter each library 
+CC_L <- dta %>%
+  select(record_day,days,record_time,hours, weekdays, CC_L) %>%
+  filter(record_day != "2025/1/1") %>%
+  filter(
+    (record_day %in% midterm & record_time >= "08:00" & record_time <= "24:00") |
+      (record_time >= "08:00" & record_time <= "21:45") 
+  )
+DH_L <- dta %>%
+  select(record_day,days,record_time,hours,weekdays,DH_L) %>%
+  filter(weekdays != "Sunday",record_time <= "21:45",record_time>="08:00")
+CC_A <- select(dta,record_day,days,record_time,hours,weekdays,CC_A)
+CC_B <- select(dta,record_day,days,record_time,hours,weekdays,CC_B)
+CC_C <- select(dta,record_day,days,record_time,hours,weekdays,CC_C)
+```
+
+Data for Chung-Cheng Library
+
+```{r final data of CC_L,include=TRUE,echo=FALSE}
+head(CC_L)
+```
+
+Data for Dah-Hsian Library
+
+```{r final data of DH_L,include=TRUE,echo=FALSE}
+head(DH_L)
+```
+
+Data for area A, B, and C of B1 Chung-Cheng Library
+
+```{r final data of CC_A,include=TRUE,echo=FALSE}
+head(CC_A)
+```
+
+```{r final data of CC_B,include=TRUE,echo=FALSE}
+head(CC_B)
+```
+
+```{r final data of CC_C,include=TRUE,echo=FALSE}
+head(CC_C)
+```
+
+## Result
+
+### Descriptive Statistics
+
+Here are the descriptive statistics of visitors of each library. Combining the table result with the boxplot, we can tell that people mainly go to CC_L more that the DH_L, and CC_L contains more extreme values. Further, visitors in area A is more than area B and area C, and neither one area is correspond to normal distribution.
+
+|             |  CC_L  |  DH_L  | CC_A  | CC_B | CC_C  |
+|-------------|:------:|:------:|:-----:|:----:|:-----:|
+| Sample Size |  1216  |  1055  | 2078  | 2078 | 2078  |
+| Min         |   .0   |   .0   |  .0   |  .0  |  .0   |
+| 1st Qu.     | 180.8  | 172.5  | 14.0  |  .0  |  4.0  |
+| Median      | 652.5  | 557.0  | 34.0  | 7.0  | 21.0  |
+| Mean        | 848.5  | 571.9  | 39.5  | 9.9  | 27.8  |
+| 3rd Qu.     | 1358.8 | 953.0  | 60.0  | 15.0 | 44.0  |
+| Max         | 3484.0 | 1667.0 | 133.0 | 60.0 | 130.0 |
+
+```{r all boxplot,include=TRUE,echo=FALSE}
+#| label: fig-boxplot
+#| fig-cap: "Boxplots showing the distribution of counts across different libraries."
+box_dta_1 <- data.frame(count=c(CC_L$CC_L, DH_L$DH_L),
+                      lib =as.factor(rep((1:2),times=c(nrow(CC_L),nrow(DH_L)))))
+box_dta_2 <- data.frame(count=c(CC_A$CC_A, CC_B$CC_B,CC_C$CC_C),
+                        lib=as.factor(rep((3:5),times=c(nrow(CC_A),nrow(CC_B),nrow(CC_C)))))
+fg1 <- ggplot(box_dta_1,aes(x=count,fill=lib))+
+  geom_boxplot()+
+  scale_fill_manual(name="Library",
+                    values = c("1" = "#8AD6E4", "2" = "#B6EEE2"),
+                    labels = c("1" = "CC_L", "2" = "DH_L"))
+fg2 <- ggplot(box_dta_2,aes(x=count,fill=lib))+
+  geom_boxplot()+
+  scale_fill_manual(name="Library_B1",
+                    values = c("3" = "#A1BDE6", "4" = "#E6BBC7", "5" = "#C6A5CC"),
+                    labels = c("3" = "CC_A", "4" = "CC_B", "5" = "CC_C"))
+grid.arrange(fg1,fg2)
+```
+
+The two figures below are time serious plot using package `xts` and `lubridate` (can zoom in and out according to x or y axis, and double click the figure can return). The top chart represents the number of people entering Chung-Cheng library(blue lines) and Dah-Hsian libaray (green lines) during the recorded period. Notice that the sample size is smaller than original data due to the mismatch of two libraries in opening hours and days. From the pattern we can tell visitors in Chung-Cheng library is more than Dah-Hsian generally.
+
+The figure 3 is composed by CC_A(navy lines), CC_B(green lines), and CC_C(purple lines) three area. These areas are open for 24 hours and seems no huge difference from the time series plot.
+
+```{r time series plot_1,include=TRUE,echo=FALSE}
+#| label: fig-time1
+#| fig-cap: "Time series plot for CC_L and DH_L"
+# sample size of DH_L smaller than CC_L, NA imputation
+CC_L$all <- paste0(CC_L$record_day," ",CC_L$record_time)
+DH_L$all <- paste0(DH_L$record_day," ",DH_L$record_time)
+combine_lib <- merge(CC_L,DH_L,by=c("all")) %>% select(c("CC_L","DH_L","all"))
+Time_series1 <- xts(x=combine_lib,order.by=(ymd_hms(combine_lib$all,tz = Sys.timezone()))) %>% dygraph() %>%
+  dyLegend(show="follow")%>% dyAxis('x',"Date") %>% dyAxis('y',"People (hour)") %>% dySeries("DH_L", label = "達賢圖書館") %>% dySeries("CC_L", label = "中正圖書館") 
+Time_series1
+```
+
+```{r time series plot_2,include=TRUE,echo=FALSE}
+#| label: fig-time2
+#| fig-cap: "Time series plot for CC_A, CC_B, and CC_C"
+CC_A$all <- paste0(CC_A$record_day," ",CC_A$record_time)
+CC_B$all <- paste0(CC_B$record_day," ",CC_B$record_time)
+CC_C$all <- paste0(CC_C$record_day," ",CC_C$record_time)
+Studying <-merge(CC_A,CC_B,by=c("all")) 
+Studying <- merge(Studying, CC_C, by = "all") %>%
+  select(c("CC_A","CC_B","CC_C","all"))
+Time_series2 <- xts(x=Studying,order.by=ymd_hms(Studying$all,tz=Sys.timezone())) %>%
+  dygraph() %>% dyAxis('x',"Date") %>% dyAxis('y',"People (hour)") %>%
+  dyLegend(show="follow") %>% dyAxis('x',"Date") %>% dyAxis('y',"People (hour)") %>%
+  dySeries("CC_A", label = "悅讀A區") %>% dySeries("CC_B", label = "悅讀B區") %>% dySeries("CC_C", label = "悅讀C區")
+Time_series2
+```
+
+To summarize, the data indicates a routine variation and a slight gap between libraries. In the next section, we plan to apply Bayesian inference to model the data and explore potential factors that could provide a meaningful explanation.
+
+### Bayesian Statistics
+
+#### Model 1
+
+For our analysis, we adapted the poisson model because it is a discrete probability distribution suitable for modeling count data during a fixed time interval. The Poisson model can be defined as:
+
+$$
+P(Y=y|\lambda) = \frac{\lambda^ye^{-\lambda}}{y!}, y =0,1,2,...
+$$
+
+In this context, we recorded the number of people entering libraries per hour. Each entry was assumed to be independent and not influenced by others. Based on this assumption, the likelihood function for N observations is given by:
+
+$$
+\begin{align}
+P(y_1,...,y_N|\lambda) &= \prod_{i=1}^N \frac{\lambda^{y_i} e^{-\lambda}}{y_i!} \\
+&= \lambda^{\sum_{i=1}^N y_i} e^{-N\lambda}\prod_{i=1}^N\frac{1}{y_i!}\\
+&\propto \lambda^{\sum_{i=1}^n y_i} e^{-n\lambda}
+\end{align}
+$$
+
+Here, $\lambda$ represents both the mean and variance of the Poisson distribution, which specifically reflects the average number of people entering the library each hour in our study.
+
+For the prior, we used Gamma distribution,which serves as a conjugate prior for the Poisson likelihood. This process will simplifies the Bayesian inference process, as the posterior distribution also follows a Gamma distribution. Specifically, the Gamma prior is parameterized as:
+
+$$
+P(\lambda)=\frac{\beta^\alpha}{\tau(\alpha)}\lambda^{\alpha-1}e^{-\beta\lambda}, \lambda>0
+$$ where $\alpha$ determines the shape of the Gamma distribution and $\beta$ influence the spread of the distribution.
+
+We build a new dataframe for modeling,where the `library_dta` includes all the counts across libraries (n=8505), and `library_dta_index` represents the length of each library counts. Further, transform them into a list including `L`(the number of libraries).
+
+```{r data_m1,echo=TRUE}
+# preparing data #
+library_dta <- c(CC_L$CC_L, DH_L$DH_L, CC_A$CC_A, CC_B$CC_B, CC_C$CC_C)
+library_dta_index <- rep((1:5),times=c(length(CC_L$CC_L),length(DH_L$DH_L),length(CC_A$CC_A),length(CC_B$CC_B),length(CC_C$CC_C)))
+dta_L <- list(y = library_dta,index = library_dta_index,
+              N = length(library_dta),  L = 5)
+```
+
+```{r m1_construction,echo=TRUE}
+m1 <-"
+model{
+  for (i in 1:N){
+    # likelihood function
+    y[i] ~ dpois(lambda[index[i]])
+    pred_y[i] ~ dpois(lambda[index[i]])
+  }
+  
+  # prior
+  for (j in 1:L){
+    alpha[j] ~ dgamma(1,1)
+    beta[j] ~ dgamma(1,1)
+    lambda[j] ~ dgamma(alpha[j],beta[j])
+  }
+}
+"
+```
+
+We set the iteration for 10000 times and 5 chains, and using `thin=10` to avoid sampling from a specific range of estimation.
+
+```{r m1_compilling,echo=TRUE}
+writeLines(m1,con="m1.txt")
+model1 <- jags.model(file="m1.txt",data=dta_L,
+                     n.chains = 5,n.adapt=10000)
+update(model1,n.iter=10000)
+# extrat parameters 
+post_m1 <- coda.samples(model1,c("lambda","pred_y"),n.iter=10000,thin=10)
+sample_m1 <- ggs(post_m1)
+```
+
+Extracting parameters, here we only extract lambda and prediction because we only concern the Poisson rate of each library and the predictability of model 1.
+
+```{r m1_parameter,echo=TRUE}
+# lambda: poisson rate parameter 
+lambda_m1 <- sapply(1:5,function(s){
+  temp<-paste0("lambda[",s,"]")
+  filter(sample_m1,Parameter==temp)$value
+})
+
+# prediction of Model 1
+pred_m1 <- pblapply(1:length(dta_L$y),function(x){ #pblapply for showing progress bar
+  temp<-paste0("pred_y[",x,"]")
+  filter(sample_m1,Parameter==temp)$value %>% mean()
+})
+  
+```
+
+The figure below is the density plot of lambda across each library, representing the expected number of people entering the library in an hour. The results indicate that CC_L has the highest lambda values followed by DH_L with the second-highest values.CC_A, CC_B, and CC_C have much lower values, with higher, centered density compared to CC_A and CC_C.
+
+```{r m1_posterior figure,echo=TRUE}
+#| label: fig-m1_lambda
+#| fig-cap: "Posterior Density of Lambda in Each Library"
+# figure - posterior distribution
+lambda.dta <- melt(lambda_m1)
+names(lambda.dta) <- c("Iteration","Library","lambda")
+
+ggplot(lambda.dta,aes(x=lambda,color=as.factor(Library)))+
+  geom_density(alpha=0.3)+
+  labs(x = "Lambda (Poisson Rate)",y = "Density")+
+  scale_color_manual(name="Library",values=c("1","2","3","4","5"),
+                      labels=c("CC_L","DH_L","CC_A","CC_B","CC_C"))+
+  theme_minimal()+
+  theme(legend.position = "right")
+```
+
+Figure 5 demonstrates that the predicted value successfully differentiate the five libraries and align with the lambda results, showing that CC_L has the greatest number of visitors. However, the model fails to fit the observed data over time and instead represent only the average numbers of visitors per hour. Thought this limitation suggests that the model does not account for time-dependent variations in visitor patterns, it did manifest the Poisson distribution is appropriate for our data.
+
+```{r m1_comparison,echo=TRUE}
+#| label: fig-m1_compa
+#| fig-cap:  "Comparison of Observed and Predicted Values"
+# data for m1 comparison 
+compare_dta <- data.frame(y = library_dta,pred = do.call(rbind,pred_m1),
+                          index = library_dta_index)
+ggplot(compare_dta) +
+  geom_line(aes(x = seq_along(y), y = y, color = as.factor(index), group = as.factor(index)), size = 1) +
+  geom_line(aes(x = seq_along(pred), y = pred, color = "Predicted", group = as.factor(index)), size = 1, linetype = "dashed") +
+  theme_minimal() +
+  scale_color_manual(
+    name = "Libraries",
+    values = c("1" = "#8AD6E4", "2" = "#B6EEE2", "3" = "#A1BDE6", "4" = "#E6BBC7", "5" = "#C6A5CC", "Predicted" = "blue"),
+    labels = c("1" = "CC_L", "2" = "DH_L", "3" = "CC_A", "4" = "CC_B", "5" = "CC_C", "Predicted" = "Predicted")
+  ) +
+  labs(x = "Observation Index",y = "People (hour)") +
+  theme(legend.position = "top")
+```
+
+#### Model 2
+
+With the success of model 1, we intend to build model 2 based on it and estimate the data by using a Poisson regression model. Again, the likelihood function for each entry is specified as : $$
+Y_i\sim Poisson(\lambda_i),\lambda_i >0
+$$ where $\lambda_i$ is modeled as a linear function of a set of predictors $x$ with a log link function such that:
+
+$$
+log(\lambda_i) = \beta_0 + \beta_1x_1 + \beta_2x_2 + ... + \beta_px_p. 
+$$ This formula is analogous to linear regression, where $\beta_0$ represents the intercept, and $\beta_j$ denotes the coefficient corresponding to the change in predictor $x_j$. Specifically, a one-unit increase in $x_j$ is associated with a multiplicative change of $e^{\beta_j}$ in the expected outcome $\mathbb{E}[Y]$.
+
+```{r data_2,echo=TRUE}
+#prepare data 
+num_CCL <- CC_L %>% select(days,hours,weekdays)
+num_DHL <- DH_L %>% select(days,hours,weekdays)
+num_CCA <- CC_A %>% select(days,hours,weekdays)
+num_CCB <- CC_B %>% select(days,hours,weekdays)
+num_CCC <- CC_C %>% select(days,hours,weekdays)
+num_varia <- rbind(num_CCL,num_DHL,num_CCA,num_CCB,num_CCC)
+# the same with the m1, just for a check 
+library_dta <- c(CC_L$CC_L, DH_L$DH_L, CC_A$CC_A, CC_B$CC_B, CC_C$CC_C)
+library_dta_index <- rep((1:5),times=c(length(CC_L$CC_L),length(DH_L$DH_L),length(CC_A$CC_A),length(CC_B$CC_B),length(CC_C$CC_C)))
+
+dta_all <- list(y = library_dta,index = library_dta_index,
+                D = num_varia$days, H = num_varia$hours, W = num_varia$weekdays,
+                N = length(library_dta),  L = 5)
+```
+
+```{r m2_construction,echo=TRUE}
+m2 <- "
+model {
+  for (i in 1:N) {
+  # likelihood function
+    log(lambda[i]) <- log(lambda_lib[index[i]]) + b0[index[i]] + b1[index[i],W[i]] + b2[index[i],H[i]] + b3[index[i]] * D[i]
+    y[i] ~ dpois(lambda[i])
+  # prediction 
+    pred_y[i] ~ dpois(lambda[i])
+  }
+  
+  for (k in 1:L) {
+    lambda_lib[k] ~ dgamma(alpha[k], beta[k]) #for designed library 
+    alpha[k] ~ dgamma(1, 1)
+    beta[k] ~ dgamma(1, 1)
+    b0[k] ~ dnorm(0,0.001) #intercept
+    b3[k] ~ dnorm(0,0.001) # day
+    for (j in 1:7){
+      b1[k,j] ~ dnorm(0, 0.001) #weekdays
+    }
+    for (m in 1:24){
+      b2[k,m] ~ dnorm(0,0.001)  #hours
+    }
+  }
+}
+"
+```
+
+We also set the 10000 iteration, 5 chains, and `thin=10`. (Note: For avoiding runing to long, the iteration can be changed into 1000, 3 chains, and without thin. The results would be similar.)
+
+```{r m2_compilling,echo=TRUE}
+writeLines(m2,con="m2.txt")
+model_m2 <- jags.model(file="m2.txt",
+                        data=dta_all,
+                        n.chains = 5,n.adapt=10000)
+update(model_m2,n.iter=10000)
+post_m2 <- coda.samples(model_m2,c("lambda","b0","b1","b2","b3","pred_y","lambda_lib"),n.iter=1000,thin=10)
+sample_m2 <- ggs(post_m2)
+```
+
+```{r m2_parameter,echo=TRUE}
+# parameter of intercepts * 5 libraries
+b0_samples <- pbsapply(1:5,function(j){
+  temp <- paste0("b0[",j,"]")
+  filter(sample_m2,Parameter==temp)$value
+})
+# parameter of days * 5 libraries
+b3_samples <- pbsapply(1:5,function(j){
+  temp <- paste0("b3[",j,"]")
+  filter(sample_m2,Parameter==temp)$value
+})
+# parameter of weekdays 
+b1_samples <- pbsapply(1:5,function(x){
+  sapply(1:7,function(j){
+    temp <- paste0("b1[",x,",",j,"]")
+    filter(sample_m2,Parameter==temp)$value 
+  })
+})
+# mean of b1 parameter 
+mean_b1 <- pbsapply(1:5,function(x){ #mean 
+  sapply(1:7,function(j){
+    temp <- paste0("b1[",x,",",j,"]")
+    filter(sample_m2,Parameter==temp)$value %>% mean()
+  })
+})
+# parameter of hours 
+b2_samples <- pbsapply(1:5,function(x){
+  sapply(1:24,function(j){
+    temp <- paste0("b2[",x,",",j,"]")
+    filter(sample_m2,Parameter==temp)$value
+  })
+})
+# mean of b2 parameter 
+mean_b2 <- pbsapply(1:5,function(x){
+  sapply(1:24,function(j){
+    temp <- paste0("b2[",x,",",j,"]")
+    filter(sample_m2,Parameter==temp)$value %>% mean()
+  })
+})
+```
+
+```{r m2_parameter_2,echo=TRUE}
+# parameter of lambda 
+lambda_samples <- pbsapply(1:length(dta_all$y),function(s){
+  temp <- paste0("lambda[",s,"]")
+  filter(sample_m2,Parameter==temp)$value
+})
+# iteration mean of Predicted values
+pred_samples <- pbsapply(1:length(dta_all$y),function(s){
+  temp <- paste0("pred_y[",s,"]")
+  filter(sample_m2,Parameter==temp)$value %>% mean()
+})
+```
+
+Figure 6 demonstrates the estimation of coefficient $\beta_1$ for weekdays across different libraries. Examining the weekday patterns, it is evident that only Thursday deviates from the others. Further inspection on the mean of the coefficient $\beta_1$ reveals that on Thursday, the coefficient for DH_L is significantly smaller, indicating that visitor numbers at DH_L are lower compared to other libraries on this day.
+
+Another important point to note is that Model 2 did not exclude Sunday for DH_L in the estimation of opening hours. Similarly, Figure 7 shows that the opening hours for DH_L do not meet the expected criteria.
+
+```{r m2_b1plot,echo=TRUE}
+#| label: fig-b1_density
+#| fig-cap: "Density plot of B1 across weekdays and libraries"
+b1_dta <- data.frame(b1_samples)
+colnames(b1_dta) <- c("CC_L","DH_L","CC_A","CC_B","CC_C")
+b1_dta$weekdays <- rep(c("Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"),each=500)
+b1_dta <- melt(b1_dta,id="weekdays")
+
+ggplot(b1_dta, aes(x = value, fill = variable, color = variable)) +
+  geom_density(alpha = 0.4) +  
+  facet_wrap(~ weekdays, scales = "free_y") +
+  scale_x_continuous(limits=c(-10,10)) + #limit the range for clear pattern
+  labs(x="b1")
+```
+
+```{r m2_b1_result,echo=FALSE}
+mean_b1dta<- data.frame(mean_b1)
+colnames(mean_b1dta) <- c("CC_L","DH_L","CC_A","CC_B","CC_C")
+mean_b1dta$weekdays <- c("Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday")
+print(mean_b1dta)
+```
+
+Figure 7 illustrates the coefficient $\beta_2$ of 24 hours for various libraries. A significant drop in coefficients is observed around 9 a.m., which coincides with the opening time of CC_L and DH_L. In contrast, CC_A, CC_B, and CC_C operate 24 hours a day, leading to less variation in their coefficients throughout the day.
+
+Notably, CC_B consistently exhibits the lowest coefficients, while DH_L shows the largest fluctuations, particularly during opening hours.
+
+```{r m2_b2_plot,echo=TRUE}
+#| label: fig-b2_plot
+#| fig-cap: "Change in Visitors Over Hours"
+b2_dta <- data.frame(mean_b2)
+colnames(b2_dta) <- c("CC_L","DH_L","CC_A","CC_B","CC_C")
+b2_dta$hours <- rep(as.factor(1:24))
+b2_dta <- melt(b2_dta,id="hours")
+ggplot(b2_dta, aes(x = hours, y = value, color = variable, group = variable)) +
+  geom_line() +
+  geom_point() +
+  labs(x = "Hours",y = "Regression Coef (B2)",color = "Libraries") +
+  theme_minimal()
+```
+
+```{r m2_b2_result,echo=FALSE}
+mean_b2dta<- data.frame(mean_b2)
+colnames(mean_b2dta) <- c("CC_L","DH_L","CC_A","CC_B","CC_C")
+mean_b2dta$time <- c(as.factor(1:24))
+print(mean_b2dta)
+```
+
+Compared to the coefficient above, the effect of days are much smaller.
+
+```{r m2_b3,echo=TRUE}
+b3_dta <- data.frame(b3_samples)
+colnames(b3_dta) <- c("CC_L","DH_L","CC_A","CC_B","CC_C")
+print(colMeans(round(b3_dta,4)))
+```
+
+To evaluate whether Model 2 is proper for our data, the below figure shows a better estimation, effectively capturing the trends vary over time compare to Model 1. In addition, the $R^2$ was calculated to assess the model's performance. With an $R^2$ of approximately ***0.93***, Model 2 demonstrates a strong ability to depict the usage trends across the libraries.
+
+```{r m2_compar,echo=TRUE}
+#| label: fig-m2_comparison
+#| fig-cap: "Comparison of Observed and Predicted Values"
+compare_dta <- data.frame(y = library_dta,pred = pred_samples,
+                          index = library_dta_index)
+
+ggplot(compare_dta) +
+  geom_line(aes(x = seq_along(y), y = y, color = as.factor(index), group = as.factor(index)), size = 1) +
+  geom_line(aes(x = seq_along(pred), y = pred, color = "Predicted", group = as.factor(index)), size = 0.3, linetype = "dashed") +
+  theme_minimal() +
+  scale_color_manual(
+    name = "Libraies",
+    values = c("1" = "#8AD6E4", "2" = "#B6EEE2", "3" = "#A1BDE6", "4" = "#E6BBC7", "5" = "#C6A5CC", "Predicted" = "#FFDA83"),
+    labels = c("1" = "CC_L", "2" = "DH_L", "3" = "CC_A", "4" = "CC_B", "5" = "CC_C", "Predicted" = "Predicted")
+  ) +
+  labs(x = "Observation Index",y = "People (hour)") +
+  theme(legend.position = "top")
+
+```
+
+```{r m2_R2,echo=TRUE}
+#calculating R^2
+SSE<-sum((dta_all$y-pred_samples)^2)
+SST<-sum((dta_all$y-mean(dta_all$y))^2)
+R2<-(SST-SSE)/SST
+R2
+```
+
+## Conclusion
+
+In this research, we successfully achieved our goal of using Bayesian inference to clearly portray the patterns of library usage across the five libraries in NCCU. Among them, the Chung-Cheng library serves the largest number of visitors, highlighting its central role when in meeting students' needs.
+
+When examining usage trends by weekday, we observed a relatively stable pattern across most libraries, with the exception of the Dah-Hsian Library, which experiences a significant drop in visitors on Thursdays. However, the reason behind this unique trend remains unclear based on the current data and needs further investigation.
+
+Turning to hourly trends, the data reveal that library usage is at its lowest around 9 a.m., likely overlapping the opening hours of certain libraries. Usage gradually increases throughout the day, stabilizing during the afternoon and evening. Interestingly, for libraries such as CC_A, CC_B, and CC_C, which operate 24 hours, the hourly fluctuations are less pronounced compared to CC_L and DH_L, whose restricted operating hours contribute to more distinct peaks and troughs in usage. Another contributing factor might be the limited seating availability of CC_A, CC_B, and CC_C, which could lead to a ceiling effect during peak times.
+
+In summary, Bayesian statistics has proven to be a powerful tool for uncovering patterns in library usage. The results provide valuable insights that can help the university optimize scheduling for activities such as cleaning, events, and maintenance, ensuring better resource management and user satisfaction.
+
+## Reference
+
+Jarad Niemi. (2013, January 22). *Bayesian inference for Poisson data* \[Video\]. YouTube. https://www.youtube.com/watch?v=lNrpPNk6InU
+
+Kruschke, J. (2014). *Doing Bayesian Data Analysis: A Tutorial with R, JAGS, and Stan*. Academic Press.
+
+OpenAI. (2025). *ChatGPT (January 2025 version)* \[Large language model\]. Used for grammar checking and content verification. Retrieved from [https://openai.com](https://openai.com/)
+
+Shao, S. (2022). A tutorial on Bayesian analysis of count data using JAGS. *Journal of Behavioral Data Science*, *2*(2), 1–18. https://doi.org/10.35566/jbds/v2n2/shao
+
+Zhou, Y. (2022, March 11). *Bayesian inference for the poisson model*. Yi’s Knowledge Base. https://www.y1zhou.com/series/bayesian-stat/bayesian-stat-bayesian-inference-poisson/
